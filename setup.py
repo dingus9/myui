@@ -17,9 +17,7 @@ if __name__ == "__main__":
         license='internal use',
         packages=[NAME],
         package_dir={NAME: NAME},
-        package_data={
-                  'myui': ['myui/*'],
-                     },
+        package_data={'myui': ['myui/*']},
         include_package_data=True,
         description="MyUI - Easily customizable Tornado UI",
 

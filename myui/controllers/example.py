@@ -1,10 +1,11 @@
-from myui import BaseHandler
 import tornado.web
+from myui import BaseHandler
 
 
 class params:
-    route='/example'
+    route = '/example'
     pass
+
 
 class Handler(BaseHandler):
     @tornado.web.removeslash
