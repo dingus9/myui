@@ -5,10 +5,13 @@ import tornado.httpserver
 import tornado.ioloop
 import tornado.options
 import logging
+import json
 
 access_log = logging.getLogger("tornado.access")
 app_log = logging.getLogger("tornado.application")
 # gen_log = logging.getLogger("tornado.general")
+
+SETTINGS = None
 
 
 class Application(tornado.web.Application):
@@ -40,6 +43,17 @@ def parse_log_file_option(option):
     raise ValueError('Invalid logger option %s' % option)
 
 
+def plugin_options():
+    """Parse the plugin options from CLI as JSON string into dict and combine into plugin_config."""
+    cli_opts = json.loads(tornado.options.options.plugin_opts)
+    for plugin, values in cli_opts.iteritems():
+        if plugin not in tornado.options.options.plugin_config:
+            tornado.options.options.plugin_config[plugin] = cli_opts
+        else:  # Merge and override plugin options in config file.
+            for key, value in cli_opts[plugin].iteritems():
+                tornado.options.options.plugin_config[plugin][key] = value
+
+
 def parse_options():
     tornado.options.define("port", default="3000", help="webui port")
     tornado.options.define("config_file", default="/etc/myui.conf", help="webui port")
@@ -52,12 +66,15 @@ def parse_options():
     #                        help="Application log file. Options: file://, console, rsyslog://",
     #                        callback=parse_log_file_option)
 
-    tornado.options.parse_command_line()
     tornado.options.define("app_title", default='My-UI')
     tornado.options.define("login_url", default='/login')
     tornado.options.define("plugins", default="",
                            help="comma-separated list of plugins that should be loaded")
-    tornado.options.define("plugin_opts", default={}, help="Dictionary of plugin specific options")
+    tornado.options.define("plugin_opts",
+                           default='{}',
+                           help="JSON string of plugin specific options merged over "
+                                "plugin_config dict")
+    tornado.options.add_parse_callback(plugin_options)
     tornado.options.define("template_path", default=os.path.join(os.path.dirname(
         os.path.realpath(__file__)), 'templates'), help="templates directory name")
     tornado.options.define("static_path",
@@ -66,15 +83,20 @@ def parse_options():
                            help="static files dirctory name")
     tornado.options.define("cookie_secret", default='this is my secret.  you dont know it.')
     tornado.options.define("debug", default=True, help="enable tornado debug mode")
-
-    tornado.options.parse_config_file(tornado.options.options.config_file)
-    tornado.options.parse_command_line()
-
-    return gen_settings()
+    tornado.options.parse_command_line(final=False)
+    tornado.options.define("plugin_config",
+                           default={},
+                           help="Dictionary of config options")
+    tornado.options.parse_config_file(tornado.options.options.config_file, final=True)
 
 
 def gen_settings():
     """Generate settings dict from tornado.options.options"""
+    try:
+        tornado.options.options.port
+        tornado.options.options.config_file
+    except AttributeError:
+        parse_options()
     return dict(
         login_url=tornado.options.options.login_url,
         app_title=tornado.options.options.app_title,
@@ -82,7 +104,7 @@ def gen_settings():
         static_path=tornado.options.options.static_path,
         cookie_secret=tornado.options.options.cookie_secret,
         debug=tornado.options.options.debug,
-        plugin_opts=tornado.options.options.plugin_opts,
+        plugin_config=tornado.options.options.plugin_config,
         #  access_log=tornado.options.options.access_log,
         #  application_log=tornado.options.options.application_log
     )
@@ -91,14 +113,12 @@ def gen_settings():
 def run_server(handlers, settings):
     http_server = tornado.httpserver.HTTPServer(Application(handlers, settings))
     http_server.listen(tornado.options.options.port)
+    app_log.info('Server up: listening on %s' % tornado.options.options.port)
     tornado.ioloop.IOLoop.instance().start()
 
 
-def create_tables(get_settings=True):
-    if get_settings:
-        settings = parse_options()
-    else:
-        settings = gen_settings()
+def get_cursors(get_settings=True):
+    settings = gen_settings()
 
     # Generating list of models
     models = {}
@@ -106,7 +126,7 @@ def create_tables(get_settings=True):
     for plugin in tornado.options.options.plugins.split(','):
         # Bootstrap plugin model settings if they exist
         try:
-            plugin_model_opts = settings['plugin_opts'][plugin]['models']
+            plugin_model_opts = settings['plugin_config'][plugin]
         except KeyError:
             plugin_model_opts = None
 
@@ -115,15 +135,11 @@ def create_tables(get_settings=True):
         for model in list_of_models:
             models[model] = import_module('{0}.models.{1}'.format(plugin, model))
             try:
-                if plugin_model_opts:
-                    cursors[model] = models[model].create_tables(plugin_model_opts[model])
-                else:
-                    cursors[model] = models[model].create_tables()
+                init = settings['database_init'] if 'database_init' in settings else False
+                cursors[model] = models[model].get_tables(plugin_model_opts, create_tables=init)
             except Exception as e:
-                # TODO: should this bail if databases aren't configured right...
-                app_log.error('Failed to create tables for %s.%s: %s' % (plugin, model, e.message))
-            else:
-                app_log.info('Model[{0}] created'.format(model))
+                app_log.error('Failed to load tables for %s.%s: %s' % (plugin, model, e.message))
+
     return cursors
 
 
@@ -140,8 +156,7 @@ def generate_controllers(plugin):
 
 
 def main():
-    settings = parse_options()
-
+    settings = gen_settings()
     # Check to see if the plugin has uimodules
     try:
         settings['ui_modules'] = {'uimodules': import_module(
