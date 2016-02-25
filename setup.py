@@ -10,7 +10,7 @@ if __name__ == "__main__":
 
     setup(
         name=NAME,
-        version="0.2.1",
+        version="0.2.2",
         author="Tony Rogers",
         author_email="tony.rogers@rackspace.com",
         url="https://github.com/teriyakichild/myui",
@@ -23,7 +23,8 @@ if __name__ == "__main__":
 
         install_requires=['tornado>=4.0'],
         entry_points={
-            'console_scripts': ['myui = myui:main',
-                                'myui-create-tables = myui:create_tables'],
+            'console_scripts': ['myui = myui:server',
+                                'myui-init-models = myui:create_models',
+                                'myui-upgrade-models = myui:upgrade_models'],
         }
     )

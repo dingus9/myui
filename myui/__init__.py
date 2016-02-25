@@ -55,19 +55,9 @@ def plugin_options():
 
 
 def parse_options():
-    tornado.options.define("port", default="3000", help="webui port")
+    # General options CLI + Config
     tornado.options.define("config_file", default="/etc/myui.conf", help="webui port")
-
-    # TODO: Get application log config working
-    # tornado.options.define("application_log",
-    #                        default="console", group="logging",
-    #                        help="Application log file. Options: file://, console, rsyslog://")
-    # tornado.options.define("access_log", default="console", group="logging",
-    #                        help="Application log file. Options: file://, console, rsyslog://",
-    #                        callback=parse_log_file_option)
-
     tornado.options.define("app_title", default='My-UI')
-    tornado.options.define("login_url", default='/login')
     tornado.options.define("plugins", default="",
                            help="comma-separated list of plugins that should be loaded")
     tornado.options.define("plugin_opts",
@@ -75,14 +65,20 @@ def parse_options():
                            help="JSON string of plugin specific options merged over "
                                 "plugin_config dict")
     tornado.options.add_parse_callback(plugin_options)
+
+    tornado.options.define("port", default="3000", help="webui port")
+    tornado.options.define("login_url", default='/login')
     tornado.options.define("template_path", default=os.path.join(os.path.dirname(
         os.path.realpath(__file__)), 'templates'), help="templates directory name")
+
     tornado.options.define("static_path",
                            default=os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                                 'static'),
                            help="static files dirctory name")
     tornado.options.define("cookie_secret", default='this is my secret.  you dont know it.')
     tornado.options.define("debug", default=True, help="enable tornado debug mode")
+
+    # Config File Only Options
     tornado.options.parse_command_line(final=False)
     tornado.options.define("plugin_config",
                            default={},
@@ -90,24 +86,21 @@ def parse_options():
     tornado.options.parse_config_file(tornado.options.options.config_file, final=True)
 
 
-def gen_settings():
+def gen_settings(mode='server'):
     """Generate settings dict from tornado.options.options"""
     try:
         tornado.options.options.port
         tornado.options.options.config_file
     except AttributeError:
         parse_options()
-    return dict(
-        login_url=tornado.options.options.login_url,
-        app_title=tornado.options.options.app_title,
-        template_path=tornado.options.options.template_path,
-        static_path=tornado.options.options.static_path,
-        cookie_secret=tornado.options.options.cookie_secret,
-        debug=tornado.options.options.debug,
-        plugin_config=tornado.options.options.plugin_config,
-        #  access_log=tornado.options.options.access_log,
-        #  application_log=tornado.options.options.application_log
-    )
+
+    return dict(template_path=tornado.options.options.template_path,
+                login_url=tornado.options.options.login_url,
+                static_path=tornado.options.options.static_path,
+                cookie_secret=tornado.options.options.cookie_secret,
+                debug=tornado.options.options.debug,
+                plugin_config=tornado.options.options.plugin_config,
+                app_title=tornado.options.options.app_title)
 
 
 def run_server(handlers, settings):
@@ -117,28 +110,31 @@ def run_server(handlers, settings):
     tornado.ioloop.IOLoop.instance().start()
 
 
-def get_cursors(get_settings=True):
+def init_models(plugin):
+    """Initialize models with settings loaded from tornado settings.
+        Typically called from inside the controller of a plugin except during model migrations
+        and creations etc."""
     settings = gen_settings()
 
     # Generating list of models
     models = {}
     cursors = {}
-    for plugin in tornado.options.options.plugins.split(','):
-        # Bootstrap plugin model settings if they exist
-        try:
-            plugin_model_opts = settings['plugin_config'][plugin]
-        except KeyError:
-            plugin_model_opts = None
 
-        app_log.info('Loading models.. ({0})'.format(plugin))
-        list_of_models = generate_models(plugin)
-        for model in list_of_models:
-            models[model] = import_module('{0}.models.{1}'.format(plugin, model))
-            try:
-                init = settings['database_init'] if 'database_init' in settings else False
-                cursors[model] = models[model].get_tables(plugin_model_opts, create_tables=init)
-            except Exception as e:
-                app_log.error('Failed to load tables for %s.%s: %s' % (plugin, model, e.message))
+    # Bootstrap plugin model settings if they exist
+    try:
+        plugin_model_opts = settings['plugin_config'][plugin]
+    except KeyError:
+        plugin_model_opts = None
+
+    app_log.info('Loading models... ({0})'.format(plugin))
+    list_of_models = generate_models(plugin)
+    for model in list_of_models:
+        models[model] = import_module('{0}.models.{1}'.format(plugin, model))
+        try:
+            # Initialize model
+            cursors[model] = models[model].get_tables(plugin_model_opts)
+        except Exception as e:
+            app_log.error('Failed to load tables for %s.%s: %s' % (plugin, model, e.message))
 
     return cursors
 
@@ -155,8 +151,21 @@ def generate_controllers(plugin):
     return ret
 
 
-def main():
+def load_controllers():
+    app_log.info('Loading controllers...')
+    controllers = {}
+    for plugin in tornado.options.options.plugins.split(','):
+        list_of_controllers = generate_controllers(plugin)
+        for controller in list_of_controllers:
+            controllers[controller] = import_module(
+                '{0}.controllers.{1}'.format(plugin, controller))
+            app_log.info('Controller[{0}] loaded'.format(controller))
+    return controllers
+
+
+def server():
     settings = gen_settings()
+
     # Check to see if the plugin has uimodules
     try:
         settings['ui_modules'] = {'uimodules': import_module(
@@ -164,17 +173,9 @@ def main():
     except ImportError:
         pass
 
-    controllers = {}
-    app_log.info('Loading controllers...')
-    for plugin in tornado.options.options.plugins.split(','):
-        list_of_controllers = generate_controllers(plugin)
-        for controller in list_of_controllers:
-            controllers[controller] = import_module(
-                '{0}.controllers.{1}'.format(plugin, controller))
-            app_log.info('Controller[{0}] loaded'.format(controller))
+    controllers = load_controllers()
 
     # Build handlers
-
     handlers = []
     for controller in controllers:
         c = controllers[controller]
@@ -186,8 +187,25 @@ def main():
                 handlers.append((uri_string, c.Handler))
     app_log.info('%s routes loaded for %s controllers' % (len(handlers), len(controllers)))
 
-    # Start tornado server
+    # Start Tornado
     run_server(handlers, settings)
 
-if __name__ == '__main__':
-    main()
+
+def create_models():
+    """Run model init"""
+    settings = gen_settings()
+    for plugin in tornado.options.options.plugins.split(','):
+        app_log.info('Running create on models in... (%s)' % plugin)
+        for model in generate_models(plugin):
+            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
+            modelObj.create(settings['plugin_config'][plugin])
+
+
+def upgrade_models():
+    """Run model upgrades"""
+    settings = gen_settings()
+    for plugin in tornado.options.options.plugins.split(','):
+        app_log.info('Running upgrade on models in... (%s)' % plugin)
+        for model in generate_models(plugin):
+            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
+            modelObj.upgrade(settings)
