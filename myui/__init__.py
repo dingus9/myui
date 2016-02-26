@@ -208,4 +208,4 @@ def upgrade_models():
         app_log.info('Running upgrade on models in... (%s)' % plugin)
         for model in generate_models(plugin):
             modelObj = import_module('{0}.models.{1}'.format(plugin, model))
-            modelObj.upgrade(settings)
+            modelObj.upgrade(settings['plugin_config'][plugin])
