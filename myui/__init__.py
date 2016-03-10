@@ -4,6 +4,7 @@ import tornado.web
 import tornado.httpserver
 import tornado.ioloop
 import tornado.options
+import tornado.wsgi
 import logging
 import json
 
@@ -56,7 +57,9 @@ def plugin_options():
 
 def parse_options():
     # General options CLI + Config
-    tornado.options.define("config_file", default="/etc/myui.conf", help="webui port")
+    tornado.options.define("config_file",
+                           default=os.environ.get('MYUI_CONFIG', "/etc/myui.conf"),
+                           help="webui port")
     tornado.options.define("app_title", default='My-UI')
     tornado.options.define("plugins", default="",
                            help="comma-separated list of plugins that should be loaded")
@@ -101,13 +104,6 @@ def gen_settings(mode='server'):
                 debug=tornado.options.options.debug,
                 plugin_config=tornado.options.options.plugin_config,
                 app_title=tornado.options.options.app_title)
-
-
-def run_server(handlers, settings):
-    http_server = tornado.httpserver.HTTPServer(Application(handlers, settings))
-    http_server.listen(tornado.options.options.port)
-    app_log.info('Server up: listening on %s' % tornado.options.options.port)
-    tornado.ioloop.IOLoop.instance().start()
 
 
 def init_models(plugin):
@@ -163,7 +159,27 @@ def load_controllers():
     return controllers
 
 
-def server():
+def create_models():
+    """Run model init"""
+    settings = gen_settings()
+    for plugin in tornado.options.options.plugins.split(','):
+        app_log.info('Running create on models in... (%s)' % plugin)
+        for model in generate_models(plugin):
+            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
+            modelObj.create(settings['plugin_config'][plugin])
+
+
+def upgrade_models():
+    """Run model upgrades"""
+    settings = gen_settings()
+    for plugin in tornado.options.options.plugins.split(','):
+        app_log.info('Running upgrade on models in... (%s)' % plugin)
+        for model in generate_models(plugin):
+            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
+            modelObj.upgrade(settings['plugin_config'][plugin])
+
+
+def application():
     settings = gen_settings()
 
     # Check to see if the plugin has uimodules
@@ -186,26 +202,15 @@ def server():
             for uri_string in c.params.route:
                 handlers.append((uri_string, c.Handler))
     app_log.info('%s routes loaded for %s controllers' % (len(handlers), len(controllers)))
-
-    # Start Tornado
-    run_server(handlers, settings)
+    return Application(handlers, settings)
 
 
-def create_models():
-    """Run model init"""
-    settings = gen_settings()
-    for plugin in tornado.options.options.plugins.split(','):
-        app_log.info('Running create on models in... (%s)' % plugin)
-        for model in generate_models(plugin):
-            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
-            modelObj.create(settings['plugin_config'][plugin])
+def server():
+    """Run dev server"""
+    http_server = tornado.httpserver.HTTPServer(application())
+    http_server.listen(tornado.options.options.port)
+    app_log.info('Server up: listening on %s' % tornado.options.options.port)
+    tornado.ioloop.IOLoop.instance().start()
 
 
-def upgrade_models():
-    """Run model upgrades"""
-    settings = gen_settings()
-    for plugin in tornado.options.options.plugins.split(','):
-        app_log.info('Running upgrade on models in... (%s)' % plugin)
-        for model in generate_models(plugin):
-            modelObj = import_module('{0}.models.{1}'.format(plugin, model))
-            modelObj.upgrade(settings['plugin_config'][plugin])
+wsgiapp = tornado.wsgi.WSGIAdapter(application())
