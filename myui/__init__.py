@@ -213,4 +213,5 @@ def server():
     tornado.ioloop.IOLoop.instance().start()
 
 
-wsgiapp = tornado.wsgi.WSGIAdapter(application())
+def wsgiapp(*params):
+    return tornado.wsgi.WSGIAdapter(application())(*params)
