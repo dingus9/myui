@@ -13,7 +13,7 @@ app_log = logging.getLogger("tornado.application")
 # gen_log = logging.getLogger("tornado.general")
 
 SETTINGS = None
-
+_application = None
 
 class Application(tornado.web.Application):
 
@@ -180,6 +180,11 @@ def upgrade_models():
 
 
 def application():
+    global _application
+
+    if _application:  # return existing cached Appliction object stored in this module
+        return _application
+
     settings = gen_settings()
 
     # Check to see if the plugin has uimodules
@@ -202,7 +207,8 @@ def application():
             for uri_string in c.params.route:
                 handlers.append((uri_string, c.Handler))
     app_log.info('%s routes loaded for %s controllers' % (len(handlers), len(controllers)))
-    return Application(handlers, settings)
+    _application = Application(handlers, settings)
+    return _application
 
 
 def server():
